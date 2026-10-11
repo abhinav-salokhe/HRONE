@@ -756,15 +756,30 @@ def late_leaderboard(
 
 
 def build_department_trend_pipeline(department: str, from_: str, to: str) -> list[dict]:
+    start_date = date.fromisoformat(from_)
+    end_date = date.fromisoformat(to)
+    start_bound = datetime.combine(start_date, time.min)
+    end_bound = datetime.combine(end_date + timedelta(days=1), time.min)
     day_dow = {
         "$dayOfWeek": {"$dateFromString": {"dateString": "$date", "timezone": "+05:30"}}
     }
     return [
-        {"$documents": [{"date": from_}]},
+        {"$documents": [{"date": start_bound}]},
         {
             "$densify": {
                 "field": "date",
-                "range": {"step": 1, "unit": "day", "bounds": [from_, to]},
+                "range": {"step": 1, "unit": "day", "bounds": [start_bound, end_bound]},
+            }
+        },
+        {
+            "$set": {
+                "date": {
+                    "$dateToString": {
+                        "date": "$date",
+                        "format": "%Y-%m-%d",
+                        "timezone": "UTC",
+                    }
+                }
             }
         },
         {
@@ -933,71 +948,204 @@ def explain_endpoint(
         get_employee_or_404(emp_code)
         date_from_m, date_to_m, _, _ = month_bounds(month)
         pipeline = [{"$match": {"emp_code": emp_code, "date": {"$gte": date_from_m, "$lte": date_to_m}}}]
+        
         explain = db.attendance_logs.aggregate(pipeline).explain()
+        
         return {"endpoint": endpoint, "collection": "attendance_logs", "explain": explain}
-        # explain = explain_aggregate("attendance_logs", pipeline)
-
-        # return {
-        #     "endpoint": endpoint,
-        #     "collection": "attendance_logs",
-        #     "explain": explain
-        # }
+    
 
     if endpoint == "department_summary":
         if not month:
-            raise HTTPException(422, "month is required")
+            raise HTTPException(
+                status_code=422,
+                detail="month is required"
+            )
+
         date_from_m, date_to_m, _, end = month_bounds(month)
         end_str = end.isoformat()
-        pipeline: list[dict] = [{"$match": {"date": {"$gte": date_from_m, "$lte": date_to_m}}}]
-        if department:
-            pipeline.extend(
-                [
-                    {
-                        "$lookup": {
-                            "from": "employees",
-                            "localField": "emp_code",
-                            "foreignField": "emp_code",
-                            "as": "emp",
-                        }
-                    },
-                    {"$unwind": "$emp"},
-                    {"$match": {"emp.department": department, "emp.joined_on": {"$lte": end_str}}},
-                ]
-            )
-        explain = db.attendance_logs.aggregate(pipeline).explain()
-        return {"endpoint": endpoint, "collection": "attendance_logs", "explain": explain}
 
+        pipeline: list[dict] = [
+            {
+                "$match": {
+                    "date": {
+                        "$gte": date_from_m,
+                        "$lte": date_to_m
+                    }
+                }
+            }
+        ]
+
+        if department:
+            pipeline.extend([
+                {
+                    "$lookup": {
+                        "from": "employees",
+                        "localField": "emp_code",
+                        "foreignField": "emp_code",
+                        "as": "emp"
+                    }
+                },
+                {"$unwind": "$emp"},
+                {
+                    "$match": {
+                        "emp.department": department,
+                        "emp.joined_on": {"$lte": end_str}
+                    }
+                }
+            ])
+
+        explain = db.command({
+            "explain": {
+                "aggregate": "attendance_logs",
+                "pipeline": pipeline,
+                "cursor": {}
+            },
+            "verbosity": "queryPlanner"
+        })
+
+        return {
+            "endpoint": endpoint,
+            "collection": "attendance_logs",
+            "explain": explain
+        }
+
+    
     if endpoint == "late_leaderboard":
         if not month:
             raise HTTPException(422, "month is required")
+
         date_from_m, date_to_m, _, end = month_bounds(month)
         end_str = end.isoformat()
+
         pipeline = [
-            {"$match": {"date": {"$gte": date_from_m, "$lte": date_to_m}}},
+            {
+                "$match": {
+                    "date": {
+                        "$gte": date_from_m,
+                        "$lte": date_to_m
+                    }
+                }
+            },
             {
                 "$lookup": {
                     "from": "employees",
                     "localField": "emp_code",
                     "foreignField": "emp_code",
-                    "as": "emp",
+                    "as": "emp"
                 }
             },
             {"$unwind": "$emp"},
-            {"$match": {"emp.joined_on": {"$lte": end_str}}},
+            {
+                "$match": {
+                    "emp.joined_on": {"$lte": end_str}
+                }
+            }
         ]
-        if department:
-            pipeline.append({"$match": {"emp.department": department}})
-        explain = db.attendance_logs.aggregate(pipeline).explain()
-        return {"endpoint": endpoint, "collection": "attendance_logs", "explain": explain}
 
+        if department:
+            pipeline.append({
+                "$match": {"emp.department": department}
+            })
+
+        # Add the leaderboard calculations here
+        pipeline.extend([
+            {
+                "$group": {
+                    "_id": "$emp_code",
+                    "employee_name": {"$first": "$emp.name"},
+                    "department": {"$first": "$emp.department"},
+                    "total_late_minutes": {
+                        "$sum": "$late_minutes"
+                    },
+                    "late_days": {
+                        "$sum": {
+                            "$cond": [
+                                {"$gt": ["$late_minutes", 0]},
+                                1,
+                                0
+                            ]
+                        }
+                    }
+                }
+            },
+            {"$sort": {"total_late_minutes": -1}},
+            {"$limit": 10}
+        ])
+
+        # Execute the aggregation and return the actual results
+        results = list(db.attendance_logs.aggregate(pipeline))
+
+        return {
+            "endpoint": endpoint,
+            "collection": "attendance_logs",
+            "leaderboard": results
+        }
+
+
+ 
     if endpoint == "department_trend":
         if not department or not from_ or not to:
-            raise HTTPException(422, "department, from, and to are required")
-        pipeline = build_department_trend_pipeline(department, from_, to)
-        explain = db.employees.aggregate(pipeline).explain()
-        return {"endpoint": endpoint, "collection": "employees", "explain": explain}
+            raise HTTPException(
+                status_code=422,
+                detail="department, from, and to are required"
+            )
+
+        # Validate date format
+        try:
+            start_date = date.fromisoformat(from_)
+            end_date = date.fromisoformat(to)
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail="from and to must be valid dates in YYYY-MM-DD format"
+            )
+
+        # Validate date range
+        if end_date < start_date:
+            raise HTTPException(
+                status_code=422,
+                detail="to must be greater than or equal to from"
+            )
+
+        if (end_date - start_date).days > 91:
+            raise HTTPException(
+                status_code=422,
+                detail="date range must not exceed 92 days"
+            )
+
+        try:
+            # Build the department trend pipeline
+            pipeline = build_department_trend_pipeline(
+                department,
+                start_date.isoformat(),
+                end_date.isoformat()
+            )
+
+            results = list(db.aggregate(pipeline))
+
+            return {
+                "endpoint": endpoint,
+                "department": department,
+                "from": start_date.isoformat(),
+                "to": end_date.isoformat(),
+                "total_days": len(results),
+                "items": results
+            }
+
+        except HTTPException:
+            raise
+
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+
+            raise HTTPException(
+                status_code=500,
+                detail=f"{type(exc).__name__}: {str(exc)}"
+            )
+
+
 
     raise HTTPException(422, "unknown endpoint")
-
 
 
