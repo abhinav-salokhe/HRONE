@@ -1,0 +1,66 @@
+services:
+  # MongoDB 7 Database Service
+  mongo:
+    image: mongo:7
+    container_name: attendance-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_DATABASE=attendance_db
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'db.runCommand(\"ping\").ok' | mongosh localhost:27017/test --quiet"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - attendance-net
+
+  # FastAPI Attendance & Analytics Service
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: attendance-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGO_URI=mongodb://mongo:27017
+      - MONGO_DB=attendance_db
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - attendance-net
+
+  # Optional Helper: One-off database seeder using sample_seed.py
+  # Usage: docker compose run --rm seed
+  # Or start all including seeder: docker compose --profile seed up
+  seed:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: attendance-seed
+    command: python sample_seed.py
+    environment:
+      - MONGO_URI=mongodb://mongo:27017
+      - MONGO_DB=attendance_db
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - attendance-net
+    profiles:
+      - seed
+
+volumes:
+  mongo_data:
+    driver: local
+
+networks:
+  attendance-net:
+    driver: bridge

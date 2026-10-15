@@ -8,7 +8,45 @@ FastAPI service backed by MongoDB for employee records, punch-in/out, manual reg
 - IST attendance dates, overnight shifts, derived fields (late, overtime, work hours, half day)
 - Unique indexes created at startup; health check pings MongoDB
 
-## Local setup
+## Quick Start with Docker Compose
+
+Ensure Docker (or Docker Desktop) is running.
+
+### 1. Build and Start Services
+Start MongoDB and the FastAPI application:
+
+```bash
+docker compose up --build
+```
+*(Add `-d` to run in detached/background mode).*
+
+### 2. Seed Sample Data
+Load the initial sample documents from `sample_data/` into MongoDB:
+
+```bash
+docker compose run --rm seed
+```
+
+> **Tip:** You can also start the services and seed data in a single command using the `seed` profile:
+> ```bash
+> docker compose --profile seed up --build
+> ```
+
+### 3. Endpoints & Access
+- **Interactive API Docs (Swagger UI):** http://localhost:8000/docs
+- **Alternative Docs (ReDoc):** http://localhost:8000/redoc
+- **Readiness Health Check:** http://localhost:8000/health
+- **MongoDB:** `mongodb://localhost:27017` (database: `attendance_db`)
+
+### 4. Stop Services
+```bash
+docker compose down
+```
+*(To also wipe stored MongoDB volume data, run `docker compose down -v`).*
+
+## Local Setup (Without Docker Compose)
+
+If running the Python service directly on your host machine:
 
 ```bash
 python -m venv .venv
@@ -17,21 +55,19 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Set `MONGO_URI` and `MONGO_DB` (optional `.env`; environment variables take precedence). Example local MongoDB 7:
+Run a standalone MongoDB 7 container or local instance:
 
 ```bash
-docker run -p 27017:27017 mongo:7
+docker run -d -p 27017:27017 --name local-mongo mongo:7
 ```
 
-Load sample documents (shapes only; grader data is larger):
+Set `MONGO_URI` and `MONGO_DB` (optional `.env`; environment variables take precedence):
 
 ```bash
 python sample_seed.py
 uvicorn app.main:app --port 8000 --reload
 ```
 
-Open `http://127.0.0.1:8000/docs` for interactive API docs.
-
 ## Submit
 
-Public Git repository with `app/main.py`, `requirements.txt`, `REVIEW.md`, `DECISIONS.md`, and this `README.md`. Do not commit `.env`, secrets, or a Dockerfile.
+Public Git repository with `app/main.py`, `requirements.txt`, `REVIEW.md`, `DECISIONS.md`, and this `README.md`.
